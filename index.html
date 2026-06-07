@@ -416,6 +416,7 @@
             color: #8ab4f8;
         }
     </style>
+<base target="_blank">
 </head>
 <body>
     <div class="container">
@@ -755,103 +756,121 @@
                 showError('请先选择视频文件');
                 return;
             }
-            
+
             try {
                 compressBtn.disabled = true;
                 compressBtn.textContent = '压缩中...';
                 resultContainer.classList.remove('show');
-                progressContainer.classList.remove('show');
                 compressing.classList.add('show');
-                
+
                 const quality = parseInt(qualitySlider.value);
                 const mimeType = outputFormat.value;
                 const bitrate = qualityLevels[quality].bitrate;
                 const isFastMode = fastMode.checked;
-                const frameSkip = isFastMode ? 2 : 1; // 快速模式每2帧取1帧
-                
-                compressingTime.textContent = '正在处理视频，请稍候...';
-                
+
+                compressingTime.textContent = '正在初始化...';
+
                 // 创建视频元素
                 const video = document.createElement('video');
                 video.src = URL.createObjectURL(selectedFile);
                 video.muted = true;
-                
+                video.playsInline = true;
+
                 await new Promise((resolve, reject) => {
                     video.onloadedmetadata = resolve;
                     video.onerror = reject;
                 });
-                
+
                 // 创建 canvas
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
-                
+
                 // 根据质量等级设置分辨率缩放
                 const scale = qualityLevels[quality].scale;
                 canvas.width = Math.floor(video.videoWidth * scale);
                 canvas.height = Math.floor(video.videoHeight * scale);
-                
+
                 console.log(`压缩设置: 质量等级=${quality}, 比特率=${bitrate}, 缩放=${scale}, 分辨率=${canvas.width}x${canvas.height}`);
-                
-                // 设置 MediaRecorder - 快速模式降低帧率
+
+                // 设置 MediaRecorder
                 const fps = isFastMode ? 15 : 30;
                 const stream = canvas.captureStream(fps);
                 const mediaRecorder = new MediaRecorder(stream, {
                     mimeType: mimeType,
                     videoBitsPerSecond: bitrate
                 });
-                
+
                 const chunks = [];
-                
+                let isRecording = false;
+
                 mediaRecorder.ondataavailable = (e) => {
                     if (e.data.size > 0) {
                         chunks.push(e.data);
                     }
                 };
-                
-                mediaRecorder.onstop = () => {
-                    compressedVideoBlob = new Blob(chunks, { type: mimeType });
-                    showResult();
-                };
-                
+
                 // 开始录制
                 mediaRecorder.start(100);
-                video.play();
-                
+                isRecording = true;
+
                 const duration = video.duration;
-                const startTime = Date.now();
-                const estimatedTime = isFastMode ? duration / 2 : duration; // 快速模式时间减半
-                
-                // 绘制帧
-                function drawFrame() {
-                    if (video.paused || video.ended) {
-                        mediaRecorder.stop();
-                        return;
+                let frameCount = 0;
+                const totalFrames = Math.floor(duration * fps);
+
+                // 逐帧处理：手动控制 currentTime，确保不丢帧
+                async function processFrames() {
+                    const startProcessTime = Date.now();
+
+                    while (video.currentTime < duration && isRecording) {
+                        // 设置视频到当前帧时间点
+                        video.currentTime = frameCount / fps;
+
+                        // 等待视频 seek 完成
+                        await new Promise((resolve) => {
+                            const onSeek = () => {
+                                video.removeEventListener('seeked', onSeek);
+                                resolve();
+                            };
+                            video.addEventListener('seeked', onSeek);
+                        });
+
+                        // 绘制到 canvas
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                        // 更新进度（基于实际处理帧数）
+                        frameCount++;
+                        const progress = Math.min(99, (frameCount / totalFrames) * 100);
+                        const remainingFrames = totalFrames - frameCount;
+                        const elapsedMs = Date.now() - startProcessTime;
+                        const avgFrameTime = elapsedMs / frameCount;
+                        const estimatedRemainingMs = remainingFrames * avgFrameTime;
+
+                        compressingTime.textContent = `处理进度：${Math.floor(progress)}% | 预计剩余：${Math.ceil(estimatedRemainingMs / 1000)} 秒${isFastMode ? ' (快速模式)' : ''}`;
+
+                        // 给 MediaRecorder 一点时间捕获帧
+                        await new Promise(r => setTimeout(r, 10));
                     }
-                    
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    
-                    // 更新进度
-                    const elapsed = (Date.now() - startTime) / 1000;
-                    const progress = Math.min(95, (elapsed / estimatedTime) * 100);
-                    const remaining = Math.max(0, estimatedTime - elapsed);
-                    
-                    compressingTime.textContent = `预计剩余时间：${Math.ceil(remaining)} 秒${isFastMode ? ' (快速模式)' : ''}`;
-                    
-                    requestAnimationFrame(drawFrame);
+
+                    // 处理完成，停止录制
+                    if (isRecording && mediaRecorder.state !== 'inactive') {
+                        mediaRecorder.stop();
+                    }
                 }
-                
-                drawFrame();
-                
+
+                // 启动处理
+                await processFrames();
+
                 // 等待录制完成
                 await new Promise((resolve) => {
                     mediaRecorder.onstop = () => {
                         compressedVideoBlob = new Blob(chunks, { type: mimeType });
+                        isRecording = false;
                         resolve();
                     };
                 });
-                
+
                 showResult();
-                
+
             } catch (error) {
                 console.error('压缩失败:', error);
                 showError('压缩失败: ' + error.message);
